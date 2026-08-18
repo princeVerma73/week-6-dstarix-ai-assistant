@@ -1,10 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
+
 from api.routes import router
-app = FastAPI(
-    title="DStarix AI Assistant",
-    version="1.0.0"
-)
-app.include_router(router)
 
 from tools.tools import (
     get_project_info,
@@ -20,6 +18,53 @@ from memory.conversation import ConversationMemory
 
 from llm import llm
 
+
+# ============================================================
+# RESPONSE TEXT NORMALIZER
+# ============================================================
+
+def extract_text(content):
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+
+        parts = []
+
+        for item in content:
+
+            if isinstance(item, str):
+                parts.append(item)
+
+            elif isinstance(item, dict):
+
+                if "text" in item:
+                    parts.append(
+                        str(item["text"])
+                    )
+
+        return "".join(parts).strip()
+
+    return str(content)
+
+
+# ============================================================
+# FASTAPI APPLICATION
+# ============================================================
+
+app = FastAPI(
+    title="DStarix AI Assistant",
+    version="1.0.0"
+)
+
+app.include_router(router)
+
+
+# ============================================================
+# TOOLS
+# ============================================================
+
 tools = [
     get_project_info,
     get_internship_phase
@@ -27,8 +72,17 @@ tools = [
 
 llm_with_tools = llm.bind_tools(tools)
 
+
+# ============================================================
+# MEMORY
+# ============================================================
+
 memory = ConversationMemory()
 
+
+# ============================================================
+# TOOL EXECUTION
+# ============================================================
 
 def run_tool(question):
 
@@ -39,36 +93,63 @@ def run_tool(question):
 
     for tool_call in response.tool_calls:
 
-        if tool_call["name"] == "get_project_info":
+        name = tool_call["name"]
+        args = tool_call.get("args", {})
+
+        if name == "get_project_info":
+
             return get_project_info.invoke(
-                tool_call["args"]
+                args
             )
 
-        if tool_call["name"] == "get_internship_phase":
+        if name == "get_internship_phase":
+
             return get_internship_phase.invoke(
-                tool_call["args"]
+                args
             )
 
     return None
 
 
-def run_rag(question):
+# ============================================================
+# RAG PIPELINE
+# ============================================================
 
-    # Step 1: Transform query
-    search_query = transform_query(question)
+def run_rag(
+    question,
+    include_sources=False
+):
+
+    # --------------------------------------------------------
+    # 1. Transform query
+    # --------------------------------------------------------
+
+    search_query = transform_query(
+        question
+    )
 
     print("\nTransformed query:")
     print(search_query)
 
-    # Step 2: Retrieve documents
+
+    # --------------------------------------------------------
+    # 2. Retrieve documents
+    # --------------------------------------------------------
+
     documents = retrieve_documents(
         search_query,
         k=5
     )
 
-    print(f"\nRetrieved {len(documents)} documents.")
+    print(
+        f"\nRetrieved {len(documents)} documents."
+    )
 
-    # Step 3: Rerank documents
+
+    # --------------------------------------------------------
+    # 3. Rerank documents
+    # --------------------------------------------------------
+
     reranked_documents = rerank_documents(
         question,
         documents,
@@ -76,22 +157,35 @@ def run_rag(question):
     )
 
     print(
-        f"Reranked to {len(reranked_documents)} documents."
+        f"Reranked to "
+        f"{len(reranked_documents)} documents."
     )
 
-    # Step 4: Create context
+
+    # --------------------------------------------------------
+    # 4. Create context
+    # --------------------------------------------------------
+
     context = "\n\n".join(
         document.page_content
         for document in reranked_documents
     )
 
-    # Step 5: Get conversation history
+
+    # --------------------------------------------------------
+    # 5. Conversation history
+    # --------------------------------------------------------
+
     history = "\n".join(
         f"{message['role']}: {message['content']}"
         for message in memory.get_history()
     )
 
-    # Step 6: Create RAG prompt
+
+    # --------------------------------------------------------
+    # 6. Create RAG prompt
+    # --------------------------------------------------------
+
     prompt = RAG_PROMPT.format(
         context=context,
         question=question
@@ -103,29 +197,199 @@ Previous conversation:
 
 {prompt}
 """
-    # Step 7: Generate answer
-    response = llm.invoke(prompt)
-    answer = response.content
-    # Step 8: Save conversation
+
+
+    # --------------------------------------------------------
+    # 7. Generate answer
+    # --------------------------------------------------------
+
+    response = llm.invoke(
+        prompt
+    )
+
+    answer = extract_text(
+        response.content
+    )
+
+
+    # --------------------------------------------------------
+    # 8. Save conversation
+    # --------------------------------------------------------
+
     memory.add_message(
         "user",
         question
     )
+
     memory.add_message(
         "assistant",
         answer
     )
+
+
+    # --------------------------------------------------------
+    # 9. Extract sources
+    # --------------------------------------------------------
+
+    sources = []
+    seen = set()
+
+    for document in reranked_documents:
+
+        metadata = document.metadata or {}
+
+
+        # ----------------------------------------------------
+        # Source filename
+        # ----------------------------------------------------
+
+        source = metadata.get(
+            "source"
+        )
+
+        if source:
+
+            source = Path(
+                str(source)
+            ).name
+
+        else:
+
+            source = "Unknown"
+
+
+        # ----------------------------------------------------
+        # Page number
+        # ----------------------------------------------------
+
+        page = metadata.get(
+            "page"
+        )
+
+        if page is None:
+
+            page = metadata.get(
+                "page_number"
+            )
+
+        if page is None:
+
+            page = metadata.get(
+                "page_num"
+            )
+
+
+        # PyPDFLoader uses 0-based page indexing.
+        # Convert it to human-readable 1-based page number.
+
+        if page is not None:
+
+            try:
+
+                page = int(page) + 1
+
+            except (
+                ValueError,
+                TypeError
+            ):
+
+                pass
+
+
+        # ----------------------------------------------------
+        # Remove duplicate source/page entries
+        # ----------------------------------------------------
+
+        source_key = (
+            source,
+            page
+        )
+
+        if source_key in seen:
+            continue
+
+        seen.add(
+            source_key
+        )
+
+        sources.append(
+            {
+                "source": source,
+                "page": page
+            }
+        )
+
+
+    # --------------------------------------------------------
+    # 10. Return response
+    # --------------------------------------------------------
+
+    if include_sources:
+
+        return {
+            "answer": answer,
+            "sources": sources
+        }
+
     return answer
 
 
-def run_assistant(question):
+# ============================================================
+# MAIN ASSISTANT
+# ============================================================
+
+def run_assistant(
+    question,
+    include_sources=False
+):
+
     try:
-        # Step 1: Check whether a tool is needed
-        tool_result = run_tool(question)
 
-        if tool_result is not None:
+        q = question.lower().strip()
 
-            prompt = f"""
+
+        # ----------------------------------------------------
+        # Tool questions
+        # ----------------------------------------------------
+
+        tool_questions = [
+
+            "purpose of the dstarix ai assistant",
+
+            "purpose of dstarix ai assistant",
+
+            "what is dstarix ai assistant",
+
+            "what is the dstarix ai assistant",
+
+            "about the dstarix ai assistant",
+
+            "project information",
+
+            "project info"
+
+        ]
+
+
+        use_tool = any(
+            keyword in q
+            for keyword in tool_questions
+        )
+
+
+        # ----------------------------------------------------
+        # Tool execution
+        # ----------------------------------------------------
+
+        if use_tool:
+
+            tool_result = run_tool(
+                question
+            )
+
+            if tool_result is not None:
+
+                prompt = f"""
 Answer the user's question using the tool result.
 
 User question:
@@ -136,22 +400,74 @@ Tool result:
 
 Give a clear and concise answer.
 """
-            response = llm.invoke(prompt)
-            answer = response.content
-            memory.add_message(
-                "user",
-                question
-            )
-            memory.add_message(
-                "assistant",
-                answer
-            )
-            return answer
-        # Step 2: Use RAG
-        return run_rag(question)
-    except Exception as e:
-        print(f"Assistant error: {e}")
-        return (
-            "Sorry, I couldn't process your request right now. "
-            "Please try again later."
+
+
+                response = llm.invoke(
+                    prompt
+                )
+
+                answer = extract_text(
+                    response.content
+                )
+
+
+                # Save conversation
+
+                memory.add_message(
+                    "user",
+                    question
+                )
+
+                memory.add_message(
+                    "assistant",
+                    answer
+                )
+
+
+                if include_sources:
+
+                    return {
+                        "answer": answer,
+                        "sources": [
+                            {
+                                "source":
+                                "DStarix AI Assistant Tool",
+
+                                "page": None
+                            }
+                        ]
+                    }
+
+
+                return answer
+
+
+        # ----------------------------------------------------
+        # RAG execution
+        # ----------------------------------------------------
+
+        return run_rag(
+            question,
+            include_sources=include_sources
         )
+
+
+    except Exception as e:
+
+        import traceback
+
+        print(
+            "\n========== ASSISTANT ERROR =========="
+        )
+
+        print(
+            str(e)
+        )
+
+        traceback.print_exc()
+
+        print(
+            "======================================\n"
+        )
+
+        raise

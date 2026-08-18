@@ -1,62 +1,159 @@
-from fastapi import APIRouter
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException
+)
+
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
-from fastapi import APIRouter, Depends
+from pydantic import (
+    BaseModel,
+    Field
+)
+
 from security import verify_api_key
-
-from fastapi import APIRouter, Depends, HTTPException
-
 from llm import llm
-#from main import run_assistant
+
 
 router = APIRouter()
 
-from pydantic import BaseModel, Field
+
 class ChatRequest(BaseModel):
+
     question: str = Field(
         ...,
         min_length=1,
         max_length=2000
     )
 
+
+class Source(BaseModel):
+
+    source: str
+    page: int | None = None
+
+
 class ChatResponse(BaseModel):
+
     answer: str
+    sources: list[Source] = Field(
+        default_factory=list
+    )
+
 
 @router.post(
     "/chat",
     response_model=ChatResponse,
-    dependencies=[Depends(verify_api_key)]
+    dependencies=[
+        Depends(verify_api_key)
+    ]
 )
-def chat(request: ChatRequest):
+def chat(
+    request: ChatRequest
+):
 
     try:
 
         from main import run_assistant
 
-        answer = run_assistant(
-            request.question
+        result = run_assistant(
+            request.question,
+            include_sources=True
         )
 
         return ChatResponse(
-            answer=answer
+            answer=str(
+                result["answer"]
+            ),
+            sources=result.get(
+                "sources",
+                []
+            )
         )
 
-    except Exception:
+    except Exception as e:
+
+        import traceback
+
+        print(
+            "\n========== CHAT ERROR =========="
+        )
+
+        print(str(e))
+
+        traceback.print_exc()
+
+        print(
+            "================================\n"
+        )
+
         raise HTTPException(
             status_code=500,
-            detail="Unable to process the request."
+            detail=str(e)
         )
 
-@router.post("/chat/stream",dependencies=[Depends(verify_api_key)])
-def chat_stream(request: ChatRequest):
+
+@router.post(
+    "/chat/stream",
+    dependencies=[
+        Depends(verify_api_key)
+    ]
+)
+def chat_stream(
+    request: ChatRequest
+):
 
     def generate():
 
-        for chunk in llm.stream(request.question):
+        try:
 
-            if chunk.content:
-                yield chunk.content
+            for chunk in llm.stream(
+                request.question
+            ):
+
+                content = chunk.content
+
+                if isinstance(
+                    content,
+                    str
+                ):
+
+                    if content:
+                        yield content
+
+                elif isinstance(
+                    content,
+                    list
+                ):
+
+                    for item in content:
+
+                        if isinstance(
+                            item,
+                            dict
+                        ):
+
+                            text = item.get(
+                                "text",
+                                ""
+                            )
+
+                            if text:
+                                yield text
+
+        except Exception as e:
+
+            print(
+                "\n========== STREAM ERROR =========="
+            )
+
+            print(str(e))
+
+            print(
+                "==================================\n"
+            )
+
+            yield f"Error: {str(e)}"
 
     return StreamingResponse(
         generate(),

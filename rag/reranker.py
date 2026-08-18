@@ -1,30 +1,70 @@
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
+
 from pathlib import Path
 import sys
 import re
-# Allow imports from project root
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+sys.path.append(
+    str(Path(__file__).resolve().parent.parent)
+)
 
 from config import GEMINI_MODEL
 
 load_dotenv()
 
-# Gemini model
+
 llm = ChatGoogleGenerativeAI(
     model=GEMINI_MODEL,
     temperature=0
 )
 
-def rerank_documents(question, documents, top_k=3):
+
+def extract_text(content):
+
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+
+        parts = []
+
+        for item in content:
+
+            if isinstance(item, str):
+                parts.append(item)
+
+            elif isinstance(item, dict):
+
+                if "text" in item:
+                    parts.append(
+                        str(item["text"])
+                    )
+
+        return "".join(parts).strip()
+
+    return str(content)
+
+
+def rerank_documents(
+    question,
+    documents,
+    top_k=3
+):
+
     if not documents:
         return []
-    # Build all documents into one prompt
+
     documents_text = ""
 
-    for i, document in enumerate(documents, start=1):
+    for i, document in enumerate(
+        documents,
+        start=1
+    ):
+
         documents_text += f"""
 DOCUMENT {i}:
+
 {document.page_content}
 
 """
@@ -54,17 +94,20 @@ Document 4: 2
 Document 5: 7
 
 Do not provide explanations.
+Do not return any other text.
 """
 
     try:
+
         response = llm.invoke(prompt)
 
-        result = response.content.strip()
+        result = extract_text(
+            response.content
+        )
 
         print("\nReranker response:")
         print(result)
 
-        # Extract scores
         scores = {}
 
         for match in re.finditer(
@@ -72,22 +115,39 @@ Do not provide explanations.
             result,
             re.IGNORECASE
         ):
-            document_number = int(match.group(1))
-            score = float(match.group(2))
 
-            scores[document_number] = score
+            document_number = int(
+                match.group(1)
+            )
+
+            score = float(
+                match.group(2)
+            )
+
+            scores[
+                document_number
+            ] = score
 
         scored_documents = []
 
-        for i, document in enumerate(documents, start=1):
+        for i, document in enumerate(
+            documents,
+            start=1
+        ):
 
-            score = scores.get(i, 0)
-
-            scored_documents.append(
-                (score, document)
+            score = scores.get(
+                i,
+                0
             )
 
-        # Highest score first
+            scored_documents.append(
+                (
+                    score,
+                    i,
+                    document
+                )
+            )
+
         scored_documents.sort(
             key=lambda x: x[0],
             reverse=True
@@ -95,52 +155,86 @@ Do not provide explanations.
 
         return [
             document
-            for score, document in scored_documents[:top_k]
+            for score, index, document
+            in scored_documents[:top_k]
         ]
 
     except Exception as e:
 
-        print(f"Reranking failed: {e}")
-        # Fallback:
-        # If Gemini fails, return the original top documents
+        print(
+            f"Reranking failed: {e}"
+        )
+
         return documents[:top_k]
 
 
-# Test complete reranking pipeline
 if __name__ == "__main__":
-    from retrieval import retrieve_documents
-    from query_transform import transform_query
 
-    question = "What happens in the second phase?"
+    from retrieval import (
+        retrieve_documents
+    )
 
-    # Step 1: Transform question
-    search_query = transform_query(question)
+    from query_transform import (
+        transform_query
+    )
 
-    print("Transformed query:")
+    question = (
+        "What happens in the second phase?"
+    )
+
+    search_query = transform_query(
+        question
+    )
+
+    print(
+        "Transformed query:"
+    )
+
     print(search_query)
 
-    # Step 2: Retrieve documents
     documents = retrieve_documents(
         search_query,
         k=5
     )
 
-    print(f"\nRetrieved {len(documents)} documents.")
+    print(
+        f"\nRetrieved {len(documents)} documents."
+    )
 
-    # Step 3: Rerank
     reranked_documents = rerank_documents(
         question,
         documents,
         top_k=3
     )
 
-    print(f"Reranked to {len(reranked_documents)} documents.")
-    print("\nReranked Documents:\n")
+    print(
+        f"Reranked to "
+        f"{len(reranked_documents)} documents."
+    )
+
+    print(
+        "\nReranked Documents:\n"
+    )
 
     for i, document in enumerate(
         reranked_documents,
         start=1
     ):
-        print(f"--- Document {i} ---")
-        print(document.page_content[:500])
+
+        print(
+            f"--- Document {i} ---"
+        )
+
+        print(
+            document.page_content[:500]
+        )
+
+        print(
+            "\nMetadata:"
+        )
+
+        print(
+            document.metadata
+        )
+
         print()

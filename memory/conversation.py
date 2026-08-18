@@ -1,21 +1,40 @@
 class ConversationMemory:
-    def __init__(self, max_messages=10):
+
+    def __init__(
+        self,
+        max_messages=10
+    ):
+
         self.messages = []
+
         self.max_messages = max_messages
 
-    def add_message(self, role, content):
+
+    def add_message(
+        self,
+        role,
+        content
+    ):
+
         self.messages.append({
             "role": role,
             "content": content
         })
+
         if len(self.messages) > self.max_messages:
+
             self.messages.pop(0)
 
+
     def get_history(self):
+
         return self.messages
 
+
     def clear(self):
+
         self.messages = []
+
 
 if __name__ == "__main__":
 
@@ -31,4 +50,6 @@ if __name__ == "__main__":
         "The second phase focuses on practical projects."
     )
 
-    print(memory.get_history())
+    print(
+        memory.get_history()
+    )
